@@ -88,6 +88,10 @@ HWND GetWindowHandle(VOID)
 VOID Release(VOID *This)
 #endif
 
+#ifdef QUERYINTERFACE
+VOID QueryInterface(REFIID riid, void **ppvObject)
+#endif
+
 #ifdef ALPC          // Advanced Local Procedure Call (ALPC)
 VOID TpAlpcCallBack(PTP_CALLBACK_INSTANCE Instance, 
   LPVOID Context, PTP_ALPC TpAlpc, LPVOID Reserved) 
@@ -103,6 +107,18 @@ INT WSHGetSocketInformation(
     INT    OptionName,
     PCHAR  OptionValue,
     INT    OptionLength)
+#endif
+
+#ifdef DDE
+HDDEDATA DDECallback(
+  UINT wType,
+  UINT wFmt,
+  HCONV hConv,
+  HSZ hsz1,
+  HSZ hsz2,
+  HDDEDATA hData,
+  ULONG_PTR dwData1,
+  ULONG_PTR dwData2)
 #endif
 
 #ifdef WNF
@@ -167,7 +183,7 @@ NTSTATUS WnfCallback (
       return (DWORD)~0UL;
     #endif
     
-    #if !defined(ALPC) && !defined(HYPHENATE) && !defined(RELEASE)
+    #if !defined(ALPC) && !defined(HYPHENATE) && !defined(RELEASE) && !defined(QUERYINTERFACE)
       return 0;
     #endif
 }
