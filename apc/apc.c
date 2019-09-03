@@ -29,31 +29,6 @@
 
 #include "../ntlib/util.h"
 
-LPVOID GetRemoteModuleHandle(DWORD pid, LPCWSTR lpModuleName) {
-    HANDLE        ss;
-    MODULEENTRY32 me;
-    LPVOID        ba = NULL;
-    
-    ss = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE, pid);
-    
-    if(ss == INVALID_HANDLE_VALUE) return NULL;
-    
-    me.dwSize = sizeof(MODULEENTRY32);
-    
-    if(Module32First(ss, &me)) {
-      do {
-        if(me.th32ProcessID == pid) {
-          if(lstrcmpi(me.szModule, lpModuleName) == 0) {
-            ba = me.modBaseAddr;
-            break;
-          }
-        }
-      } while(Module32Next(ss, &me));
-    }
-    CloseHandle(ss);
-    return ba;
-}
-
 // Try to find thread in alertable state for opened process.
 // This is based on code used in AtomBombing technique.
 //
@@ -95,11 +70,9 @@ HANDLE find_alertable_thread1(HANDLE hp, DWORD pid) {
       } while(Thread32Next(ss, &te));
     }
 
-    // Resolve address of SetEvent in remote process
+    // Resolve address of SetEvent
     m  = GetModuleHandle(L"kernel32.dll");
-    rm = GetRemoteModuleHandle(pid, L"kernel32.dll");
     f  = GetProcAddress(m, "SetEvent");
-    f  = ((PBYTE)f - (PBYTE)m) + (PBYTE)rm;
     
     for(i=0; i<cnt; i++) {
       // 2. create event and duplicate in target process
@@ -252,11 +225,12 @@ HANDLE find_alertable_thread2(HANDLE hp, DWORD pid) {
     evt[1] = CreateEvent(NULL, FALSE, FALSE, NULL);
     ht     = CreateThread(NULL, 0, ThreadProc, evt, 0, NULL);
     
-    // resolve address of SetEvent in remote process
+    // wait a moment for thread to initialize
+    Sleep(100);
+    
+    // resolve address of SetEvent
     m      = GetModuleHandle(L"kernel32.dll");
-    rm     = GetRemoteModuleHandle(pid, L"kernel32.dll");
     sevt   = GetProcAddress(m, "SetEvent");
-    sevt   = ((PBYTE)sevt - (PBYTE)m) + (PBYTE)rm;
     
     // for each alertable function
     for(i=0; i<6; i++) {
